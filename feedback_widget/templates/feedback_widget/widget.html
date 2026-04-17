@@ -268,12 +268,11 @@
     if (!modalEl) return;  // modal må finnes; floatBtn er optional så egen trigger kan brukes
     // Lazy-init the Modal instance on first use so we don't depend on
     // bootstrap being loaded before this <script> runs.
-    var modal = null;
     function getModal() {
-        if (!modal && typeof bootstrap !== 'undefined' && bootstrap.Modal) {
-            modal = new bootstrap.Modal(modalEl);
-        }
-        return modal;
+        if (typeof bootstrap === 'undefined' || !bootstrap.Modal) return null;
+        // getOrCreateInstance sikrer at vi får samme instans Bootstrap bruker internt
+        // når modalen åpnes via data-bs-toggle (unngår duplikat-backdrop som henger igjen)
+        return bootstrap.Modal.getOrCreateInstance(modalEl);
     }
     var msgInput = document.getElementById('fbMessage');
     var kindInput = document.getElementById('fbKind');
@@ -1225,18 +1224,22 @@
     function clearPendingCountdown() {
         try { localStorage.removeItem(COUNTDOWN_KEY); } catch (e) {}
     }
+    var _activeTick = null;
     function runCountdownTick(initialRemaining, onDone) {
+        if (_activeTick) return;  // Forhindrer at to parallelle ticker starter
         countdownNum.textContent = initialRemaining;
         resetRingPosition();
         countdownEl.classList.add('active');
-        var tick = setInterval(function() {
-            // Recompute remaining from the stored end-time each tick — robust
-            // against tab-throttling and across page navigation.
+        _activeTick = setInterval(function() {
             var st = getPendingCountdown();
-            if (!st) { clearInterval(tick); countdownEl.classList.remove('active'); return; }
+            if (!st) {
+                clearInterval(_activeTick); _activeTick = null;
+                countdownEl.classList.remove('active');
+                return;
+            }
             var r = Math.max(0, Math.ceil((st.endTime - Date.now()) / 1000));
             if (r <= 0) {
-                clearInterval(tick);
+                clearInterval(_activeTick); _activeTick = null;
                 clearPendingCountdown();
                 countdownEl.classList.remove('active');
                 onDone();
@@ -1245,7 +1248,10 @@
             }
         }, 250);
     }
+    var _captureInProgress = false;
     function captureAndStoreShot() {
+        if (_captureInProgress) return;  // unngår dobbel-fangst hvis to ticks fyrer samtidig
+        _captureInProgress = true;
         // Capture the CURRENT page and append as a new shot in the draft
         doCapture().then(function(img) {
             var tmp = document.createElement('canvas');
@@ -1268,7 +1274,8 @@
                 // Load draft with activeIdx='last' so the newly captured shot is active
                 loadDraft({activeIdx: 'last'});
             }
-        }).catch(function() {});
+            _captureInProgress = false;
+        }).catch(function() { _captureInProgress = false; });
     }
     // On every page load, check if a pending countdown exists and resume it.
     (function resumePendingCountdown() {
