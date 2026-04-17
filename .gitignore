@@ -1,0 +1,80 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Django
+*.log
+*.pot
+*.sqlite3
+*.sqlite3-journal
+local_settings.py
+db.sqlite3
+media/
+staticfiles/
+
+# Example project DB
+example/db.sqlite3
+example/media/
+example/staticfiles/
+
+# Django migrations in example project (keep app migrations though)
+example/example_project/__pycache__/
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing / coverage
+.coverage
+.coverage.*
+.cache
+.pytest_cache/
+.tox/
+htmlcov/
+nosetests.xml
+coverage.xml
+*.cover
+
+# Documentation
+docs/_build/
+
+# Jupyter
+.ipynb_checkpoints

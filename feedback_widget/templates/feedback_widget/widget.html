@@ -1,0 +1,1342 @@
+{% load i18n %}
+<!-- Feedback widget — button lives in navbar, modal + JS here -->
+<style>
+    #fbCanvasWrap {
+        position: relative;
+        background: #f0f0f0;
+        border: 1px solid #dee2e6;
+        border-radius: 4px;
+        overflow: auto;
+        min-height: 200px;
+        height: 420px;
+        max-height: 85vh;
+        resize: vertical;
+    }
+    #fbCanvasWrap canvas { display: block; max-width: 100%; cursor: crosshair; }
+    #fbCanvasWrap.mode-move canvas { cursor: grab; }
+    #fbCanvasWrap::-webkit-resizer { background: #2d6a4f; }
+
+    /* When the modal is in fullscreen mode, let the canvas area grow to fill
+       the available space. The modal-body is flex-column; canvasWrap gets flex:1. */
+    .modal.show .modal-dialog.modal-fullscreen #fbCanvasWrap {
+        flex: 1 1 auto;
+        height: auto;
+        max-height: none;
+        resize: none;
+    }
+    .modal.show .modal-dialog.modal-fullscreen .modal-body { display: flex; flex-direction: column; }
+
+    .fb-tool-btn.active { background: #2d6a4f !important; color: #fff !important; border-color: #2d6a4f !important; }
+
+    .fb-shot-strip { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+    .fb-shot-slot {
+        position: relative;
+        width: 140px;
+        height: 84px;
+        border: 2px solid #dee2e6;
+        border-radius: 6px;
+        background: #f8f9fa;
+        overflow: hidden;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: border-color 0.15s, transform 0.15s;
+    }
+    .fb-shot-slot:hover { transform: translateY(-1px); }
+    .fb-shot-slot.active { border-color: #2d6a4f; box-shadow: 0 0 0 3px rgba(45,106,79,0.15); }
+    .fb-shot-slot.empty { border-style: dashed; color: #6c757d; }
+    .fb-shot-slot img { width: 100%; height: 100%; object-fit: cover; }
+    .fb-shot-slot .fb-shot-meta {
+        position: absolute;
+        left: 0; right: 0; bottom: 0;
+        background: rgba(0,0,0,0.65);
+        color: #fff;
+        font-size: 10px;
+        padding: 2px 6px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .fb-shot-slot .fb-shot-del {
+        position: absolute;
+        top: 2px; right: 2px;
+        background: rgba(0,0,0,0.65);
+        color: #fff;
+        border: none;
+        border-radius: 50%;
+        width: 20px; height: 20px;
+        line-height: 20px;
+        font-size: 11px;
+        padding: 0;
+        cursor: pointer;
+        display: none;
+    }
+    .fb-shot-slot:not(.empty):hover .fb-shot-del { display: block; }
+    .fb-shot-slot .fb-shot-num {
+        position: absolute;
+        top: 2px; left: 2px;
+        background: rgba(0,0,0,0.65);
+        color: #fff;
+        border-radius: 3px;
+        font-size: 10px;
+        padding: 1px 5px;
+        font-weight: 600;
+    }
+
+    /* Countdown overlay shown on the page while waiting for timed capture.
+       The wrapper is full-screen and lets clicks pass through (pointer-events:none)
+       so user can interact with the page; only the draggable ring itself catches mouse events. */
+    #fbCountdown {
+        position: fixed;
+        inset: 0;
+        display: none;
+        z-index: 2147483646;
+        pointer-events: none;
+    }
+    #fbCountdown.active { display: block; }
+    #fbCountdown .fb-ring {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: rgba(45, 106, 79, 0.92);
+        color: #fff;
+        width: 140px;
+        height: 140px;
+        border-radius: 50%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+        font-weight: 700;
+        text-shadow: 0 1px 2px rgba(0,0,0,0.3);
+        cursor: grab;
+        pointer-events: auto;
+        user-select: none;
+        touch-action: none;
+    }
+    #fbCountdown .fb-ring:active { cursor: grabbing; }
+    #fbCountdown .fb-ring .num { font-size: 56px; line-height: 1; }
+    #fbCountdown .fb-ring .label { font-size: 11px; opacity: 0.9; margin-top: 2px; }
+    #fbCountdown .fb-ring .hint { font-size: 10px; opacity: 0.75; margin-top: 2px; }
+    #fbCountdown .fb-ring .take-now {
+        margin-top: 6px;
+        background: rgba(255,255,255,0.2);
+        border: 1px solid rgba(255,255,255,0.5);
+        color: #fff;
+        font-size: 11px;
+        padding: 3px 9px;
+        border-radius: 12px;
+        cursor: pointer;
+        font-weight: 600;
+        transition: background 0.15s;
+    }
+    #fbCountdown .fb-ring .take-now:hover { background: rgba(255,255,255,0.35); }
+</style>
+
+<!-- Countdown overlay (rendered outside any modal so it's visible during capture) -->
+<div id="fbCountdown" aria-hidden="true">
+    <div class="fb-ring" id="fbCountdownRing">
+        <div class="num" id="fbCountdownNum">3</div>
+        <div class="label">{% trans "Tar skjermbilde" %}</div>
+        <div class="hint">{% trans "Dra for å flytte" %}</div>
+        <button type="button" id="fbCountdownNow" class="take-now">
+            <i class="bi bi-camera-fill"></i> {% trans "Ta bilde nå" %}
+        </button>
+    </div>
+</div>
+
+<div class="modal fade" id="fbModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-chat-left-dots"></i> {% trans "Send tilbakemelding" %}</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="{% trans 'Lukk' %}"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label small">{% trans "Type" %}</label>
+                    <select id="fbKind" class="form-select form-select-sm" style="max-width: 240px;">
+                        <option value="tips" selected>💡 {% trans "Tips / ønske" %}</option>
+                        <option value="bug">🐞 {% trans "Bug / feil" %}</option>
+                        <option value="spørsmål">❓ {% trans "Spørsmål" %}</option>
+                        <option value="annet">💬 {% trans "Annet" %}</option>
+                    </select>
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label small">{% trans "Beskriv det du opplever (påkrevd)" %}</label>
+                    <textarea id="fbMessage" class="form-control" rows="4" placeholder="{% trans 'Hva skjedde? Hva forventet du i stedet?' %}"></textarea>
+                </div>
+
+                <div class="mb-2 d-flex gap-2 align-items-center flex-wrap">
+                    <button type="button" id="fbTakeShot" class="btn btn-outline-secondary btn-sm">
+                        <i class="bi bi-camera"></i> {% trans "Ta skjermbilde" %}
+                    </button>
+                    <label class="small text-muted mb-0" for="fbTimer">{% trans "Forsinkelse:" %}</label>
+                    <select id="fbTimer" class="form-select form-select-sm" style="width:auto;">
+                        <option value="0">{% trans "Umiddelbart" %}</option>
+                        <option value="3">3 {% trans "sek" %}</option>
+                        <option value="5">5 {% trans "sek" %}</option>
+                        <option value="10" selected>10 {% trans "sek" %}</option>
+                        <option value="20">20 {% trans "sek" %}</option>
+                        <option value="30">30 {% trans "sek" %}</option>
+                    </select>
+                    <span class="small text-muted ms-auto" id="fbShotCount">0/3</span>
+                </div>
+                <span id="fbShotStatus" class="small text-muted d-block mb-1"></span>
+
+                <!-- Shot strip: up to 3 slots, each with its own URL -->
+                <div class="fb-shot-strip" id="fbShotStrip"></div>
+                <div class="form-text small mb-2" id="fbShotHint" style="display:none;">
+                    <i class="bi bi-info-circle"></i> {% trans "Tips: Lagre utkast, naviger til en annen side og åpne tilbakemelding igjen for å legge til flere skjermbilder (opptil 3)." %}
+                </div>
+
+                <div id="fbEditorArea" style="display:none;">
+                    <div class="d-flex gap-1 mb-2 flex-wrap align-items-center">
+                        <button type="button" class="btn btn-sm btn-outline-secondary fb-tool-btn active" data-tool="redact" title="{% trans 'Sladd område' %}">
+                            <i class="bi bi-eraser-fill"></i> {% trans "Sladd" %}
+                        </button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary fb-tool-btn" data-tool="highlight" title="{% trans 'Uthev' %}">
+                            <i class="bi bi-lightbulb"></i> {% trans "Uthev" %}
+                        </button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary fb-tool-btn" data-tool="pen" title="{% trans 'Tegn frihånd' %}">
+                            <i class="bi bi-pen-fill"></i> {% trans "Tegn" %}
+                        </button>
+                        <!-- Pen color picker (only relevant for pen) -->
+                        <div class="btn-group btn-group-sm" role="group" id="fbPenColors" style="margin-left: 2px;">
+                            <button type="button" class="btn btn-sm fb-pen-color active" data-color="#e63946" style="background:#e63946; width:22px; height:22px; padding:0; border:2px solid #fff; box-shadow:0 0 0 1px #333;" title="{% trans 'Rød' %}"></button>
+                            <button type="button" class="btn btn-sm fb-pen-color ms-1" data-color="#0d6efd" style="background:#0d6efd; width:22px; height:22px; padding:0; border:2px solid #fff; box-shadow:0 0 0 1px #333;" title="{% trans 'Blå' %}"></button>
+                            <button type="button" class="btn btn-sm fb-pen-color ms-1" data-color="#198754" style="background:#198754; width:22px; height:22px; padding:0; border:2px solid #fff; box-shadow:0 0 0 1px #333;" title="{% trans 'Grønn' %}"></button>
+                            <button type="button" class="btn btn-sm fb-pen-color ms-1" data-color="#212529" style="background:#212529; width:22px; height:22px; padding:0; border:2px solid #fff; box-shadow:0 0 0 1px #333;" title="{% trans 'Sort' %}"></button>
+                        </div>
+                        <button type="button" class="btn btn-sm btn-outline-secondary fb-tool-btn ms-1" data-tool="crop" title="{% trans 'Beskjær' %}">
+                            <i class="bi bi-crop"></i> {% trans "Beskjær" %}
+                        </button>
+                        <button type="button" id="fbUndo" class="btn btn-sm btn-outline-secondary" title="{% trans 'Angre' %}">
+                            <i class="bi bi-arrow-counterclockwise"></i>
+                        </button>
+                        <button type="button" id="fbReset" class="btn btn-sm btn-outline-danger" title="{% trans 'Tilbakestill' %}">
+                            <i class="bi bi-arrow-repeat"></i>
+                        </button>
+                        <button type="button" id="fbFullSize" class="btn btn-sm btn-outline-secondary" title="{% trans 'Vis i full størrelse' %}">
+                            <i class="bi bi-arrows-angle-expand"></i>
+                        </button>
+                        <button type="button" id="fbRemoveShot" class="btn btn-sm btn-outline-danger ms-auto" title="{% trans 'Fjern bilde' %}">
+                            <i class="bi bi-trash"></i>
+                        </button>
+                    </div>
+                    <div id="fbCanvasWrap">
+                        <canvas id="fbCanvas"></canvas>
+                    </div>
+                    <div class="form-text small mt-1">
+                        <i class="bi bi-arrows-vertical"></i> {% trans "Dra høyre-nederste hjørne for å endre høyden." %}
+                        {% trans "Tegn ny boks eller frihåndsstrek. Klikk/dra eksisterende boks for å flytte. Dobbeltklikk for å slette." %}
+                    </div>
+                </div>
+
+                <div class="mt-3 p-2 bg-light rounded small text-muted" style="font-size: 0.78rem;">
+                    <div class="fw-semibold mb-1"><i class="bi bi-info-circle"></i> {% trans "Sendes sammen:" %}</div>
+                    <div id="fbUrlList"></div>
+                    <div>{% trans "Nettleser" %}: <span id="fbUa"></span></div>
+                    <div>{% trans "Skjerm" %}: <span id="fbScreen"></span></div>
+                </div>
+
+                <div id="fbResult" class="mt-3" style="display:none;"></div>
+            </div>
+            <div class="modal-footer">
+                <span id="fbDraftStatus" class="small text-muted me-auto"></span>
+                <button type="button" id="fbClearDraft" class="btn btn-outline-danger btn-sm" style="display:none;">
+                    <i class="bi bi-x-circle"></i> {% trans "Forkast utkast" %}
+                </button>
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">{% trans "Lukk" %}</button>
+                <button type="button" id="fbSubmit" class="btn btn-success">
+                    <i class="bi bi-send"></i> {% trans "Send inn" %}
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+<script>
+(function() {
+    var floatBtn = document.getElementById('fbFloatBtn');
+    var modalEl = document.getElementById('fbModal');
+    if (!floatBtn || !modalEl) return;
+    // Lazy-init the Modal instance on first use so we don't depend on
+    // bootstrap being loaded before this <script> runs.
+    var modal = null;
+    function getModal() {
+        if (!modal && typeof bootstrap !== 'undefined' && bootstrap.Modal) {
+            modal = new bootstrap.Modal(modalEl);
+        }
+        return modal;
+    }
+    var msgInput = document.getElementById('fbMessage');
+    var kindInput = document.getElementById('fbKind');
+    var takeBtn = document.getElementById('fbTakeShot');
+    var editorArea = document.getElementById('fbEditorArea');
+    var canvas = document.getElementById('fbCanvas');
+    var ctx = canvas.getContext('2d');
+    var shotStatus = document.getElementById('fbShotStatus');
+    var submitBtn = document.getElementById('fbSubmit');
+    var resultBox = document.getElementById('fbResult');
+    var removeBtn = document.getElementById('fbRemoveShot');
+    var undoBtn = document.getElementById('fbUndo');
+    var resetBtn = document.getElementById('fbReset');
+
+    // State: up to 3 shots, each is {dataUrl, url, overlays, cropRect, img (Image object, not persisted)}
+    var MAX_SHOTS = 3;
+    var shots = [];
+    var activeIdx = -1;   // index of currently-edited shot in `shots`, -1 = none
+    var currentTool = 'redact';
+    var dragMode = null;    // 'draw' | 'move' | null
+    var dragBox = null;     // overlay being moved
+    var dragOffset = null;  // {x,y} cursor offset within the box
+    var start = null;
+    var timerInput = document.getElementById('fbTimer');
+    var countdownEl = document.getElementById('fbCountdown');
+    var countdownNum = document.getElementById('fbCountdownNum');
+    var countdownRing = document.getElementById('fbCountdownRing');
+    var shotStrip = document.getElementById('fbShotStrip');
+    var shotCountLbl = document.getElementById('fbShotCount');
+    var shotHint = document.getElementById('fbShotHint');
+    var clearDraftBtn = document.getElementById('fbClearDraft');
+    var draftStatus = document.getElementById('fbDraftStatus');
+    var countdownNowBtn = document.getElementById('fbCountdownNow');
+    var DRAFT_KEY = 'fbDraft_v2';
+    var COUNTDOWN_KEY = 'fbCountdownState_v1';
+    var TIMER_PREF_KEY = 'fbTimerPref_v1';
+
+    // Load the user's remembered timer preference (if any) and save on change
+    (function() {
+        try {
+            var pref = localStorage.getItem(TIMER_PREF_KEY);
+            if (pref !== null && pref !== undefined) {
+                // Ensure the option exists before applying
+                var opt = timerInput.querySelector('option[value="' + pref + '"]');
+                if (opt) timerInput.value = pref;
+            }
+        } catch (e) {}
+        timerInput.addEventListener('change', function() {
+            try { localStorage.setItem(TIMER_PREF_KEY, timerInput.value); } catch (e) {}
+        });
+    })();
+
+    // "Ta bilde nå" shortcut on the countdown ring — collapses the remaining
+    // time to zero so the running tick fires onDone on its next iteration.
+    if (countdownNowBtn) {
+        countdownNowBtn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            try {
+                var st = JSON.parse(localStorage.getItem(COUNTDOWN_KEY) || '{}');
+                st.endTime = Date.now();
+                localStorage.setItem(COUNTDOWN_KEY, JSON.stringify(st));
+            } catch (e2) {}
+        });
+        // Prevent the drag handler on the ring from kicking in when clicking the button
+        countdownNowBtn.addEventListener('mousedown', function(e) { e.stopPropagation(); });
+        countdownNowBtn.addEventListener('touchstart', function(e) { e.stopPropagation(); }, {passive: true});
+    }
+
+    function activeShot() { return activeIdx >= 0 ? shots[activeIdx] : null; }
+
+    var penColor = '#e63946';
+    var penWidth = 3;
+
+    // Drag behaviour for the countdown ring
+    (function() {
+        if (!countdownRing) return;
+        var dragging = false;
+        var offset = {x: 0, y: 0};
+        function onDown(e) {
+            dragging = true;
+            var rect = countdownRing.getBoundingClientRect();
+            var cx = (e.touches ? e.touches[0].clientX : e.clientX);
+            var cy = (e.touches ? e.touches[0].clientY : e.clientY);
+            offset.x = cx - rect.left;
+            offset.y = cy - rect.top;
+            // Break out of the centering transform so we can position freely
+            countdownRing.style.transform = 'none';
+            countdownRing.style.top = rect.top + 'px';
+            countdownRing.style.left = rect.left + 'px';
+            e.preventDefault();
+        }
+        function onMove(e) {
+            if (!dragging) return;
+            var cx = (e.touches ? e.touches[0].clientX : e.clientX);
+            var cy = (e.touches ? e.touches[0].clientY : e.clientY);
+            var x = cx - offset.x;
+            var y = cy - offset.y;
+            // Clamp to viewport
+            x = Math.max(0, Math.min(window.innerWidth - countdownRing.offsetWidth, x));
+            y = Math.max(0, Math.min(window.innerHeight - countdownRing.offsetHeight, y));
+            countdownRing.style.left = x + 'px';
+            countdownRing.style.top = y + 'px';
+            e.preventDefault();
+        }
+        function onUp() { dragging = false; }
+        countdownRing.addEventListener('mousedown', onDown);
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+        countdownRing.addEventListener('touchstart', onDown, {passive: false});
+        document.addEventListener('touchmove', onMove, {passive: false});
+        document.addEventListener('touchend', onUp);
+    })();
+
+    // Reset ring to center whenever it's shown
+    function resetRingPosition() {
+        if (!countdownRing) return;
+        countdownRing.style.transform = 'translate(-50%, -50%)';
+        countdownRing.style.top = '50%';
+        countdownRing.style.left = '50%';
+    }
+
+    function updateContext() {
+        document.getElementById('fbUa').textContent = navigator.userAgent;
+        document.getElementById('fbScreen').textContent = window.innerWidth + '×' + window.innerHeight;
+        renderUrlList();
+    }
+
+    // List ONE url per shot (+ the current page if no shots yet)
+    function renderUrlList() {
+        var list = document.getElementById('fbUrlList');
+        if (!list) return;
+        list.innerHTML = '';
+        if (shots.length === 0) {
+            var row = document.createElement('div');
+            row.innerHTML = 'URL: <span style="word-break:break-all;">' + escapeHtml(location.href) + '</span>';
+            list.appendChild(row);
+            return;
+        }
+        shots.forEach(function(s, i) {
+            var row = document.createElement('div');
+            var label = shots.length > 1 ? ('{% trans "Bilde" %} ' + (i + 1) + ': ') : 'URL: ';
+            row.innerHTML = label + '<span style="word-break:break-all;">' + escapeHtml(s.url || location.href) + '</span>';
+            list.appendChild(row);
+        });
+    }
+
+    floatBtn.addEventListener('click', function(e) {
+        e.preventDefault();
+        var m = getModal();
+        if (!m) {
+            alert('{% trans "Modalen kunne ikke lastes — last inn siden på nytt." %}');
+            return;
+        }
+        resetEditor();
+        resultBox.style.display = 'none';
+        resultBox.innerHTML = '';
+        msgInput.value = '';
+        submitBtn.disabled = false;
+        updateContext();
+        loadDraft();     // auto-load any saved draft
+        renderShotStrip();
+        m.show();
+    });
+
+    document.querySelectorAll('.fb-tool-btn').forEach(function(b) {
+        b.addEventListener('click', function() {
+            document.querySelectorAll('.fb-tool-btn').forEach(function(x) { x.classList.remove('active'); });
+            b.classList.add('active');
+            currentTool = b.dataset.tool;
+        });
+    });
+
+    // Pen color picker
+    document.querySelectorAll('.fb-pen-color').forEach(function(b) {
+        b.addEventListener('click', function() {
+            penColor = b.dataset.color;
+            document.querySelectorAll('.fb-pen-color').forEach(function(x) { x.classList.remove('active'); x.style.borderColor = '#fff'; });
+            b.classList.add('active');
+            b.style.borderColor = '#212529';
+            // Switch to pen tool automatically when a color is picked
+            document.querySelectorAll('.fb-tool-btn').forEach(function(x) { x.classList.remove('active'); });
+            var penBtn = document.querySelector('.fb-tool-btn[data-tool="pen"]');
+            if (penBtn) penBtn.classList.add('active');
+            currentTool = 'pen';
+        });
+    });
+
+    // Full-size toggle — expands the whole modal to fill the viewport
+    var fullSizeBtn = document.getElementById('fbFullSize');
+    var canvasWrap = document.getElementById('fbCanvasWrap');
+    var modalDialog = modalEl.querySelector('.modal-dialog');
+    if (fullSizeBtn && modalDialog) {
+        fullSizeBtn.addEventListener('click', function() {
+            var isFs = modalDialog.classList.toggle('modal-fullscreen');
+            fullSizeBtn.querySelector('i').className = isFs
+                ? 'bi bi-arrows-angle-contract'
+                : 'bi bi-arrows-angle-expand';
+            fullSizeBtn.title = isFs ? '{% trans "Krymp" %}' : '{% trans "Vis i full størrelse" %}';
+        });
+    }
+
+    function hideOverlayUi() {
+        modalEl.style.visibility = 'hidden';
+        document.querySelectorAll('.modal-backdrop').forEach(function(el) {
+            el.style.visibility = 'hidden';
+        });
+    }
+    function showOverlayUi() {
+        modalEl.style.visibility = '';
+        document.querySelectorAll('.modal-backdrop').forEach(function(el) {
+            el.style.visibility = '';
+        });
+    }
+
+    function doCapture() {
+        // Capture ONLY the visible viewport (what the user actually sees), not
+        // the entire document. x/y respect the current scroll position.
+        var sx = window.pageXOffset || window.scrollX || document.documentElement.scrollLeft || 0;
+        var sy = window.pageYOffset || window.scrollY || document.documentElement.scrollTop || 0;
+        return html2canvas(document.body, {
+            useCORS: true,
+            logging: false,
+            scale: Math.min(window.devicePixelRatio || 1, 1.5),
+            x: sx,
+            y: sy,
+            width: window.innerWidth,
+            height: window.innerHeight,
+            windowWidth: document.documentElement.scrollWidth,
+            windowHeight: document.documentElement.scrollHeight,
+            scrollX: -sx,
+            scrollY: -sy,
+        }).then(function(shot) {
+            return new Promise(function(resolve, reject) {
+                var img = new Image();
+                img.onload = function() { resolve(img); };
+                img.onerror = reject;
+                img.src = shot.toDataURL('image/png');
+            });
+        });
+    }
+
+    function onCaptureReady(img) {
+        if (shots.length >= MAX_SHOTS) {
+            shotStatus.textContent = '{% trans "Maks 3 skjermbilder — slett ett for å ta et nytt." %}';
+            takeBtn.disabled = false;
+            return;
+        }
+        var dataUrl;
+        try {
+            var tmp = document.createElement('canvas');
+            tmp.width = img.width; tmp.height = img.height;
+            tmp.getContext('2d').drawImage(img, 0, 0);
+            dataUrl = tmp.toDataURL('image/png');
+        } catch (e) { dataUrl = ''; }
+        shots.push({
+            dataUrl: dataUrl,
+            url: location.href,
+            overlays: [],
+            cropRect: null,
+            img: img,
+        });
+        activeIdx = shots.length - 1;
+        resizeCanvasToImage();
+        redraw();
+        editorArea.style.display = '';
+        renderShotStrip();
+        shotStatus.textContent = '{% trans "Klar — dra for å sladde. Lagre utkast og naviger for flere bilder." %}';
+        takeBtn.disabled = shots.length >= MAX_SHOTS;
+        updateTakeBtnState();
+        if (typeof autoSave === 'function') autoSave();
+    }
+
+    function updateTakeBtnState() {
+        var atMax = shots.length >= MAX_SHOTS;
+        takeBtn.disabled = atMax;
+        takeBtn.innerHTML = atMax
+            ? '<i class="bi bi-camera"></i> {% trans "Maks bilder nådd" %}'
+            : '<i class="bi bi-camera"></i> {% trans "Ta skjermbilde" %}' + (shots.length ? ' (' + (shots.length + 1) + '/' + MAX_SHOTS + ')' : '');
+        shotCountLbl.textContent = shots.length + '/' + MAX_SHOTS;
+        shotHint.style.display = (shots.length > 0 && shots.length < MAX_SHOTS) ? '' : 'none';
+    }
+
+    takeBtn.addEventListener('click', function() {
+        takeBtn.disabled = true;
+        var delay = Math.max(0, parseInt(timerInput.value || '0', 10));
+
+        if (delay === 0) {
+            // Immediate: hide modal visually (not fully close) then capture
+            hideOverlayUi();
+            shotStatus.textContent = '{% trans "Lager skjermbilde..." %}';
+            setTimeout(function() {
+                doCapture().then(function(img) {
+                    showOverlayUi();
+                    onCaptureReady(img);
+                }).catch(function(err) {
+                    showOverlayUi();
+                    shotStatus.textContent = '{% trans "Feil" %}: ' + err.message;
+                    takeBtn.disabled = false;
+                });
+            }, 120);
+            return;
+        }
+
+        // Delayed capture — persist state, fully close modal (so page can scroll and
+        // user can navigate) and let the page-load handler (or this same page's
+        // resume logic) take the shot when the timer fires.
+        saveDraft(true);   // preserve current message/shots before closing
+        setPendingCountdown(delay);
+        var m = getModal();
+        if (m) m.hide();   // fully close — removes body.modal-open so scroll works
+        // Kick off the resume logic right away (same page)
+        setTimeout(function() {
+            runCountdownTick(delay, captureAndStoreShot);
+        }, 50);
+    });
+
+    removeBtn.addEventListener('click', function() {
+        if (activeIdx < 0) return;
+        shots.splice(activeIdx, 1);
+        if (shots.length === 0) {
+            activeIdx = -1;
+            editorArea.style.display = 'none';
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+        } else {
+            activeIdx = Math.min(activeIdx, shots.length - 1);
+            resizeCanvasToImage();
+            redraw();
+        }
+        renderShotStrip();
+        updateTakeBtnState();
+        if (typeof autoSave === 'function') autoSave();
+    });
+
+    undoBtn.addEventListener('click', function() {
+        var s = activeShot();
+        if (!s) return;
+        if (s.overlays.length) { s.overlays.pop(); redraw(); }
+        else if (s.cropRect) { s.cropRect = null; resizeCanvasToImage(); redraw(); }
+        if (typeof autoSave === 'function') autoSave();
+    });
+
+    resetBtn.addEventListener('click', function() {
+        var s = activeShot();
+        if (!s) return;
+        s.overlays = [];
+        s.cropRect = null;
+        resizeCanvasToImage();
+        redraw();
+        if (typeof autoSave === 'function') autoSave();
+    });
+
+    function resetEditor() {
+        shots = [];
+        activeIdx = -1;
+        editorArea.style.display = 'none';
+        shotStatus.textContent = '';
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        updateTakeBtnState();
+    }
+
+    function resizeCanvasToImage() {
+        var s = activeShot();
+        if (!s || !s.img) return;
+        var w = s.cropRect ? s.cropRect.w : s.img.width;
+        var h = s.cropRect ? s.cropRect.h : s.img.height;
+        canvas.width = w;
+        canvas.height = h;
+        canvas.style.width = '100%';
+        canvas.style.height = 'auto';
+    }
+
+    function drawStroke(c, stroke) {
+        if (!stroke.points || stroke.points.length < 1) return;
+        c.strokeStyle = stroke.color || '#e63946';
+        c.lineWidth = stroke.width || 3;
+        c.lineCap = 'round';
+        c.lineJoin = 'round';
+        c.beginPath();
+        c.moveTo(stroke.points[0].x, stroke.points[0].y);
+        for (var i = 1; i < stroke.points.length; i++) {
+            c.lineTo(stroke.points[i].x, stroke.points[i].y);
+        }
+        if (stroke.points.length === 1) {
+            // Single point: draw a dot
+            c.arc(stroke.points[0].x, stroke.points[0].y, (stroke.width || 3) / 2, 0, Math.PI * 2);
+            c.fillStyle = stroke.color || '#e63946';
+            c.fill();
+            return;
+        }
+        c.stroke();
+    }
+
+    function redraw() {
+        var s = activeShot();
+        if (!s || !s.img) return;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        // Draw the base (possibly cropped)
+        if (s.cropRect) {
+            ctx.drawImage(s.img, s.cropRect.x, s.cropRect.y, s.cropRect.w, s.cropRect.h, 0, 0, s.cropRect.w, s.cropRect.h);
+        } else {
+            ctx.drawImage(s.img, 0, 0);
+        }
+        // If any highlight overlays exist, use a "spotlight" effect
+        var highlights = s.overlays.filter(function(o) { return o.tool === 'highlight'; });
+        var redacts = s.overlays.filter(function(o) { return o.tool === 'redact'; });
+        var pens = s.overlays.filter(function(o) { return o.tool === 'pen'; });
+        if (highlights.length > 0) {
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            highlights.forEach(function(o) {
+                var x = Math.min(o.x1, o.x2);
+                var y = Math.min(o.y1, o.y2);
+                var w = Math.abs(o.x2 - o.x1);
+                var h = Math.abs(o.y2 - o.y1);
+                var sx = (s.cropRect ? s.cropRect.x : 0) + x;
+                var sy = (s.cropRect ? s.cropRect.y : 0) + y;
+                ctx.drawImage(s.img, sx, sy, w, h, x, y, w, h);
+                ctx.strokeStyle = '#ffc107';
+                ctx.lineWidth = 3;
+                ctx.strokeRect(x, y, w, h);
+            });
+        }
+        // Pen strokes on top of (possibly dimmed) layer
+        pens.forEach(function(o) { drawStroke(ctx, o); });
+        // Redacts always drawn solid on top
+        redacts.forEach(function(o) {
+            var x = Math.min(o.x1, o.x2);
+            var y = Math.min(o.y1, o.y2);
+            var w = Math.abs(o.x2 - o.x1);
+            var h = Math.abs(o.y2 - o.y1);
+            ctx.fillStyle = '#000';
+            ctx.fillRect(x, y, w, h);
+        });
+    }
+
+    // Shot strip render: thumbnails + empty slots + click handlers
+    function renderShotStrip() {
+        shotStrip.innerHTML = '';
+        for (var i = 0; i < MAX_SHOTS; i++) {
+            var slot = document.createElement('div');
+            slot.className = 'fb-shot-slot';
+            var s = shots[i];
+            if (s) {
+                if (i === activeIdx) slot.classList.add('active');
+                slot.innerHTML = '<img src="' + s.dataUrl + '" alt="">' +
+                    '<span class="fb-shot-num">#' + (i + 1) + '</span>' +
+                    '<button type="button" class="fb-shot-del" title="{% trans "Slett" %}">×</button>' +
+                    '<div class="fb-shot-meta" title="' + escapeAttr(s.url) + '">' + escapeHtml(shortenUrl(s.url)) + '</div>';
+                (function(idx, slotEl) {
+                    slotEl.addEventListener('click', function(e) {
+                        if (e.target && e.target.classList.contains('fb-shot-del')) return;
+                        activeIdx = idx;
+                        ensureImgLoaded(shots[idx]).then(function() {
+                            resizeCanvasToImage();
+                            redraw();
+                            editorArea.style.display = '';
+                            renderShotStrip();
+                        });
+                    });
+                    slotEl.querySelector('.fb-shot-del').addEventListener('click', function(e) {
+                        e.stopPropagation();
+                        shots.splice(idx, 1);
+                        if (shots.length === 0) {
+                            activeIdx = -1;
+                            editorArea.style.display = 'none';
+                            ctx.clearRect(0, 0, canvas.width, canvas.height);
+                        } else {
+                            activeIdx = Math.min(idx, shots.length - 1);
+                            ensureImgLoaded(shots[activeIdx]).then(function() {
+                                resizeCanvasToImage();
+                                redraw();
+                            });
+                        }
+                        renderShotStrip();
+                        updateTakeBtnState();
+                    });
+                })(i, slot);
+            } else {
+                slot.classList.add('empty');
+                slot.innerHTML = '<div class="text-center"><i class="bi bi-plus-circle"></i><div class="small">#' + (i + 1) + '</div></div>';
+                slot.addEventListener('click', function() {
+                    if (shots.length >= MAX_SHOTS) return;
+                    takeBtn.click();
+                });
+            }
+            shotStrip.appendChild(slot);
+        }
+        updateTakeBtnState();
+        renderUrlList();
+    }
+
+    function escapeHtml(s) { return String(s).replace(/[&<>"']/g, function(m) { return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]; }); }
+    function escapeAttr(s) { return escapeHtml(s); }
+    function shortenUrl(u) {
+        try {
+            var p = new URL(u);
+            return p.pathname + (p.search || '');
+        } catch (e) { return String(u).slice(0, 40); }
+    }
+
+    function ensureImgLoaded(s) {
+        return new Promise(function(resolve) {
+            if (s.img && s.img.complete && s.img.naturalWidth > 0) { resolve(); return; }
+            var img = new Image();
+            img.onload = function() { s.img = img; resolve(); };
+            img.onerror = function() { resolve(); };
+            img.src = s.dataUrl;
+        });
+    }
+
+    function canvasCoords(e) {
+        var rect = canvas.getBoundingClientRect();
+        var scaleX = canvas.width / rect.width;
+        var scaleY = canvas.height / rect.height;
+        // TouchEvent: 'touchend' has NO e.touches (list is empty) — the final
+        // position lives on e.changedTouches. Fall back to that.
+        var touchList = null;
+        if (e.touches && e.touches.length) touchList = e.touches;
+        else if (e.changedTouches && e.changedTouches.length) touchList = e.changedTouches;
+        var clientX = touchList ? touchList[0].clientX : e.clientX;
+        var clientY = touchList ? touchList[0].clientY : e.clientY;
+        return {x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY};
+    }
+
+    canvas.addEventListener('mousedown', onDown);
+    canvas.addEventListener('mousemove', onMove);
+    canvas.addEventListener('mouseup', onUp);
+    canvas.addEventListener('mouseleave', onUp);
+    canvas.addEventListener('dblclick', onDblClick);
+    canvas.addEventListener('touchstart', function(e) { e.preventDefault(); onDown(e); });
+    canvas.addEventListener('touchmove', function(e) { e.preventDefault(); onMove(e); });
+    canvas.addEventListener('touchend', function(e) { e.preventDefault(); onUp(e); });
+    canvas.addEventListener('touchcancel', function(e) { onUp(e); });
+
+    function boxContains(o, p) {
+        var x1 = Math.min(o.x1, o.x2), x2 = Math.max(o.x1, o.x2);
+        var y1 = Math.min(o.y1, o.y2), y2 = Math.max(o.y1, o.y2);
+        return p.x >= x1 && p.x <= x2 && p.y >= y1 && p.y <= y2;
+    }
+
+    function findBoxAt(p) {
+        var s = activeShot();
+        if (!s) return null;
+        for (var i = s.overlays.length - 1; i >= 0; i--) {
+            var o = s.overlays[i];
+            // Only rectangular overlays are movable; pen strokes are skipped
+            if (o.tool === 'pen') continue;
+            if (boxContains(o, p)) return o;
+        }
+        return null;
+    }
+
+    function updateCursor(p) {
+        if (!activeShot()) { canvas.style.cursor = 'default'; return; }
+        if (p && findBoxAt(p)) {
+            canvas.style.cursor = 'move';
+        } else {
+            canvas.style.cursor = 'crosshair';
+        }
+    }
+
+    var activeStroke = null;   // in-progress pen stroke
+
+    function onDown(e) {
+        var s = activeShot();
+        if (!s) return;
+        var p = canvasCoords(e);
+        if (currentTool === 'pen') {
+            activeStroke = {tool: 'pen', color: penColor, width: penWidth, points: [p]};
+            s.overlays.push(activeStroke);
+            dragMode = 'pen';
+            return;
+        }
+        var hit = currentTool === 'crop' ? null : findBoxAt(p);
+        if (hit) {
+            dragMode = 'move';
+            dragBox = hit;
+            var bx = Math.min(hit.x1, hit.x2);
+            var by = Math.min(hit.y1, hit.y2);
+            dragOffset = {x: p.x - bx, y: p.y - by};
+            canvas.style.cursor = 'grabbing';
+            return;
+        }
+        // No active tool AND not hitting an existing box → ignore
+        if (!currentTool) return;
+        dragMode = 'draw';
+        start = p;
+    }
+
+    function onMove(e) {
+        var p = canvasCoords(e);
+        if (!dragMode) {
+            updateCursor(p);
+            return;
+        }
+        if (dragMode === 'pen' && activeStroke) {
+            // Only add the point if it's meaningfully different from the last
+            var last = activeStroke.points[activeStroke.points.length - 1];
+            if (!last || Math.hypot(p.x - last.x, p.y - last.y) > 1.5) {
+                activeStroke.points.push(p);
+                // Incremental draw: just draw the latest segment
+                ctx.strokeStyle = activeStroke.color;
+                ctx.lineWidth = activeStroke.width;
+                ctx.lineCap = 'round';
+                ctx.lineJoin = 'round';
+                ctx.beginPath();
+                ctx.moveTo(last.x, last.y);
+                ctx.lineTo(p.x, p.y);
+                ctx.stroke();
+            }
+            return;
+        }
+        if (dragMode === 'move' && dragBox) {
+            var w = Math.abs(dragBox.x2 - dragBox.x1);
+            var h = Math.abs(dragBox.y2 - dragBox.y1);
+            var nx = p.x - dragOffset.x;
+            var ny = p.y - dragOffset.y;
+            // Clamp to canvas
+            nx = Math.max(0, Math.min(canvas.width - w, nx));
+            ny = Math.max(0, Math.min(canvas.height - h, ny));
+            dragBox.x1 = nx;
+            dragBox.y1 = ny;
+            dragBox.x2 = nx + w;
+            dragBox.y2 = ny + h;
+            redraw();
+            return;
+        }
+        // dragMode === 'draw'
+        redraw();
+        var x = Math.min(start.x, p.x), y = Math.min(start.y, p.y);
+        var w = Math.abs(p.x - start.x), h = Math.abs(p.y - start.y);
+        if (currentTool === 'redact') {
+            ctx.fillStyle = 'rgba(0,0,0,0.85)';
+            ctx.fillRect(x, y, w, h);
+        } else if (currentTool === 'highlight') {
+            ctx.strokeStyle = '#ffc107';
+            ctx.lineWidth = 4;
+            ctx.strokeRect(x, y, w, h);
+        } else if (currentTool === 'crop') {
+            ctx.strokeStyle = '#0d6efd';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([6, 4]);
+            ctx.strokeRect(x, y, w, h);
+            ctx.setLineDash([]);
+        }
+    }
+
+    function onUp(e) {
+        if (!dragMode) return;
+        var s = activeShot();
+        var p = canvasCoords(e);
+        if (dragMode === 'pen') {
+            if (activeStroke && activeStroke.points.length < 1) {
+                s.overlays.splice(s.overlays.indexOf(activeStroke), 1);
+            }
+            activeStroke = null;
+            dragMode = null;
+            redraw();
+            updateCursor(p);
+            if (typeof autoSave === 'function') autoSave();
+            return;
+        }
+        if (dragMode === 'move') {
+            dragMode = null;
+            dragBox = null;
+            dragOffset = null;
+            updateCursor(p);
+            if (typeof autoSave === 'function') autoSave();
+            return;
+        }
+        dragMode = null;
+        var minSize = 4;
+        if (!s || Math.abs(p.x - start.x) < minSize || Math.abs(p.y - start.y) < minSize) {
+            redraw();
+            updateCursor(p);
+            return;
+        }
+        if (currentTool === 'crop') {
+            var rx = Math.round(Math.min(start.x, p.x));
+            var ry = Math.round(Math.min(start.y, p.y));
+            var rw = Math.round(Math.abs(p.x - start.x));
+            var rh = Math.round(Math.abs(p.y - start.y));
+            var offsetX = (s.cropRect ? s.cropRect.x : 0) + rx;
+            var offsetY = (s.cropRect ? s.cropRect.y : 0) + ry;
+            s.overlays = s.overlays.map(function(o) {
+                return {
+                    tool: o.tool,
+                    x1: o.x1 - rx, y1: o.y1 - ry,
+                    x2: o.x2 - rx, y2: o.y2 - ry,
+                };
+            });
+            s.cropRect = {x: offsetX, y: offsetY, w: rw, h: rh};
+            resizeCanvasToImage();
+            redraw();
+            // After one crop, deselect all tools so the next drag does nothing
+            // until the user explicitly picks a tool. Prevents accidental extra
+            // crops or stray redact boxes right after a crop gesture.
+            currentTool = '';
+            document.querySelectorAll('.fb-tool-btn').forEach(function(x) { x.classList.remove('active'); });
+        } else {
+            s.overlays.push({
+                tool: currentTool,
+                x1: Math.min(start.x, p.x),
+                y1: Math.min(start.y, p.y),
+                x2: Math.max(start.x, p.x),
+                y2: Math.max(start.y, p.y),
+            });
+            redraw();
+        }
+        updateCursor(p);
+        if (typeof autoSave === 'function') autoSave();
+    }
+
+    function onDblClick(e) {
+        var s = activeShot();
+        if (!s) return;
+        var p = canvasCoords(e);
+        var hit = findBoxAt(p);
+        if (hit) {
+            var idx = s.overlays.indexOf(hit);
+            if (idx !== -1) {
+                s.overlays.splice(idx, 1);
+                redraw();
+                updateCursor(p);
+                if (typeof autoSave === 'function') autoSave();
+            }
+        }
+    }
+
+    function getCsrf() {
+        var name = 'csrftoken';
+        var parts = document.cookie.split(';');
+        for (var i = 0; i < parts.length; i++) {
+            var c = parts[i].trim();
+            if (c.indexOf(name + '=') === 0) return decodeURIComponent(c.substring(name.length + 1));
+        }
+        return '';
+    }
+
+    // Render the ACTIVE shot with overlays flattened into the image, then return dataUrl
+    function flattenActiveToDataUrl(s) {
+        if (!s || !s.img) return '';
+        var tmp = document.createElement('canvas');
+        var w = s.cropRect ? s.cropRect.w : s.img.width;
+        var h = s.cropRect ? s.cropRect.h : s.img.height;
+        tmp.width = w; tmp.height = h;
+        var c = tmp.getContext('2d');
+        if (s.cropRect) {
+            c.drawImage(s.img, s.cropRect.x, s.cropRect.y, s.cropRect.w, s.cropRect.h, 0, 0, w, h);
+        } else {
+            c.drawImage(s.img, 0, 0);
+        }
+        var highlights = s.overlays.filter(function(o) { return o.tool === 'highlight'; });
+        var redacts = s.overlays.filter(function(o) { return o.tool === 'redact'; });
+        var pens = s.overlays.filter(function(o) { return o.tool === 'pen'; });
+        if (highlights.length > 0) {
+            c.fillStyle = 'rgba(0, 0, 0, 0.55)';
+            c.fillRect(0, 0, w, h);
+            highlights.forEach(function(o) {
+                var x = Math.min(o.x1, o.x2), y = Math.min(o.y1, o.y2);
+                var ow = Math.abs(o.x2 - o.x1), oh = Math.abs(o.y2 - o.y1);
+                var sx = (s.cropRect ? s.cropRect.x : 0) + x;
+                var sy = (s.cropRect ? s.cropRect.y : 0) + y;
+                c.drawImage(s.img, sx, sy, ow, oh, x, y, ow, oh);
+                c.strokeStyle = '#ffc107';
+                c.lineWidth = 3;
+                c.strokeRect(x, y, ow, oh);
+            });
+        }
+        pens.forEach(function(o) { drawStroke(c, o); });
+        redacts.forEach(function(o) {
+            var x = Math.min(o.x1, o.x2), y = Math.min(o.y1, o.y2);
+            var ow = Math.abs(o.x2 - o.x1), oh = Math.abs(o.y2 - o.y1);
+            c.fillStyle = '#000';
+            c.fillRect(x, y, ow, oh);
+        });
+        return tmp.toDataURL('image/png');
+    }
+
+    function isQuotaError(e) {
+        if (!e) return false;
+        if (e.name === 'QuotaExceededError') return true;
+        // IE: e.code 22, Firefox: e.code 1014
+        if (e.code === 22 || e.code === 1014) return true;
+        return /quota|QuotaExceeded/i.test(e.name + ' ' + (e.message || ''));
+    }
+
+    // Draft persistence — tries full (with shots). On quota overflow, retries
+    // without shots so the message + type are still preserved, and shows a
+    // visible warning so the user knows their screenshots won't survive nav.
+    function saveDraft(silent) {
+        var full = {
+            kind: kindInput.value,
+            message: msgInput.value,
+            shots: shots.map(function(s) {
+                return {dataUrl: s.dataUrl, url: s.url, overlays: s.overlays, cropRect: s.cropRect};
+            }),
+            saved_at: new Date().toISOString(),
+        };
+        try {
+            localStorage.setItem(DRAFT_KEY, JSON.stringify(full));
+            if (!silent) {
+                draftStatus.textContent = '{% trans "Utkast lagret" %} ' + new Date().toLocaleTimeString();
+                clearDraftBtn.style.display = '';
+            }
+            return true;
+        } catch (e) {
+            if (isQuotaError(e)) {
+                // Fall back: save message+kind only (no shots)
+                try {
+                    var minimal = {
+                        kind: full.kind, message: full.message, shots: [],
+                        saved_at: full.saved_at,
+                    };
+                    localStorage.setItem(DRAFT_KEY, JSON.stringify(minimal));
+                    // ALWAYS show this warning — it's important for the user
+                    draftStatus.innerHTML =
+                        '<span class="text-warning fw-semibold">' +
+                        '<i class="bi bi-exclamation-triangle-fill"></i> ' +
+                        '{% trans "Bildene er for store til lokal lagring — meldingen er lagret, men skjermbildene forsvinner hvis du navigerer bort. Send inn nå for å beholde dem." %}' +
+                        '</span>';
+                    clearDraftBtn.style.display = '';
+                    return true;
+                } catch (e2) { /* fallthrough */ }
+            }
+            if (!silent) {
+                draftStatus.innerHTML =
+                    '<span class="text-danger"><i class="bi bi-x-circle-fill"></i> ' +
+                    '{% trans "Kunne ikke lagre utkast." %}</span>';
+            }
+            return false;
+        }
+    }
+    function loadDraft(options) {
+        options = options || {};
+        return new Promise(function(resolveLoad) {
+            try {
+                var raw = localStorage.getItem(DRAFT_KEY);
+                if (!raw) { draftStatus.textContent = ''; clearDraftBtn.style.display = 'none'; resolveLoad(); return; }
+                var d = JSON.parse(raw);
+                kindInput.value = d.kind || 'tips';
+                msgInput.value = d.message || '';
+                shots = [];
+                activeIdx = -1;
+                var ordered = (d.shots || []).slice(0, MAX_SHOTS);
+                // Load images IN ORDER so indexes map 1:1 with saved shots
+                Promise.all(ordered.map(function(sd) {
+                    return new Promise(function(res) {
+                        var img = new Image();
+                        img.onload = function() { res({sd: sd, img: img}); };
+                        img.onerror = function() { res(null); };
+                        img.src = sd.dataUrl;
+                    });
+                })).then(function(results) {
+                    results.forEach(function(r) {
+                        if (!r) return;
+                        shots.push({
+                            dataUrl: r.sd.dataUrl,
+                            url: r.sd.url || '',
+                            overlays: r.sd.overlays || [],
+                            cropRect: r.sd.cropRect || null,
+                            img: r.img,
+                        });
+                    });
+                    if (shots.length > 0) {
+                        var idx = options.activeIdx;
+                        if (idx === 'last' || idx === undefined) {
+                            idx = (options.activeIdx === 'last') ? shots.length - 1 : 0;
+                        }
+                        if (typeof idx !== 'number' || idx < 0 || idx >= shots.length) idx = 0;
+                        activeIdx = idx;
+                        resizeCanvasToImage();
+                        redraw();
+                        editorArea.style.display = '';
+                    }
+                    renderShotStrip();
+                    var when = d.saved_at ? new Date(d.saved_at).toLocaleString() : '';
+                    draftStatus.textContent = '{% trans "Utkast lastet" %}' + (when ? ' (' + when + ')' : '');
+                    clearDraftBtn.style.display = '';
+                    resolveLoad();
+                });
+            } catch (e) {
+                draftStatus.textContent = '';
+                clearDraftBtn.style.display = 'none';
+                resolveLoad();
+            }
+        });
+    }
+    function clearDraft() {
+        try { localStorage.removeItem(DRAFT_KEY); } catch (e) {}
+        draftStatus.textContent = '';
+        clearDraftBtn.style.display = 'none';
+    }
+    // Auto-save draft on any relevant change, debounced
+    var autoSaveTimer = null;
+    function autoSave() {
+        clearTimeout(autoSaveTimer);
+        autoSaveTimer = setTimeout(function() { saveDraft(true); refreshDraftStatus(); }, 400);
+    }
+    function refreshDraftStatus() {
+        try {
+            var raw = localStorage.getItem(DRAFT_KEY);
+            if (!raw) { draftStatus.textContent = ''; clearDraftBtn.style.display = 'none'; return; }
+            draftStatus.innerHTML = '<i class="bi bi-cloud-check"></i> {% trans "Auto-lagret" %}';
+            clearDraftBtn.style.display = '';
+        } catch (e) {}
+    }
+    msgInput.addEventListener('input', autoSave);
+    kindInput.addEventListener('change', autoSave);
+
+    clearDraftBtn.addEventListener('click', function() {
+        if (!window.confirm('{% trans "Forkast lagret utkast? Melding og skjermbilder blir borte." %}')) return;
+        clearDraft();
+        resetEditor();
+        msgInput.value = '';
+        kindInput.value = 'tips';
+        renderShotStrip();
+        refreshDraftStatus();
+    });
+
+    // Persistent (cross-page-navigation) countdown state
+    function setPendingCountdown(delaySeconds) {
+        try {
+            localStorage.setItem(COUNTDOWN_KEY, JSON.stringify({
+                endTime: Date.now() + delaySeconds * 1000,
+                started: Date.now(),
+            }));
+        } catch (e) {}
+    }
+    function getPendingCountdown() {
+        try {
+            var raw = localStorage.getItem(COUNTDOWN_KEY);
+            return raw ? JSON.parse(raw) : null;
+        } catch (e) { return null; }
+    }
+    function clearPendingCountdown() {
+        try { localStorage.removeItem(COUNTDOWN_KEY); } catch (e) {}
+    }
+    function runCountdownTick(initialRemaining, onDone) {
+        countdownNum.textContent = initialRemaining;
+        resetRingPosition();
+        countdownEl.classList.add('active');
+        var tick = setInterval(function() {
+            // Recompute remaining from the stored end-time each tick — robust
+            // against tab-throttling and across page navigation.
+            var st = getPendingCountdown();
+            if (!st) { clearInterval(tick); countdownEl.classList.remove('active'); return; }
+            var r = Math.max(0, Math.ceil((st.endTime - Date.now()) / 1000));
+            if (r <= 0) {
+                clearInterval(tick);
+                clearPendingCountdown();
+                countdownEl.classList.remove('active');
+                onDone();
+            } else {
+                countdownNum.textContent = r;
+            }
+        }, 250);
+    }
+    function captureAndStoreShot() {
+        // Capture the CURRENT page and append as a new shot in the draft
+        doCapture().then(function(img) {
+            var tmp = document.createElement('canvas');
+            tmp.width = img.width; tmp.height = img.height;
+            tmp.getContext('2d').drawImage(img, 0, 0);
+            var dataUrl;
+            try { dataUrl = tmp.toDataURL('image/png'); } catch (e) { dataUrl = ''; }
+            var d;
+            try { d = JSON.parse(localStorage.getItem(DRAFT_KEY) || '{"shots":[]}'); } catch (e) { d = {shots: []}; }
+            d.shots = (d.shots || []).slice(0, MAX_SHOTS - 1);
+            d.shots.push({dataUrl: dataUrl, url: location.href, overlays: [], cropRect: null});
+            d.saved_at = new Date().toISOString();
+            try { localStorage.setItem(DRAFT_KEY, JSON.stringify(d)); } catch (e) {}
+            // Auto-open the widget and focus the NEW (last) shot
+            var m = getModal();
+            if (m) {
+                resetEditor();
+                m.show();
+                updateContext();
+                // Load draft with activeIdx='last' so the newly captured shot is active
+                loadDraft({activeIdx: 'last'});
+            }
+        }).catch(function() {});
+    }
+    // On every page load, check if a pending countdown exists and resume it.
+    (function resumePendingCountdown() {
+        var st = getPendingCountdown();
+        if (!st) return;
+        var now = Date.now();
+        var remaining = Math.max(0, Math.ceil((st.endTime - now) / 1000));
+        if (remaining <= 0) {
+            // Already past due — capture immediately
+            clearPendingCountdown();
+            captureAndStoreShot();
+        } else {
+            runCountdownTick(remaining, captureAndStoreShot);
+        }
+    })();
+
+    submitBtn.addEventListener('click', function() {
+        var msg = msgInput.value.trim();
+        if (!msg) {
+            resultBox.style.display = 'block';
+            resultBox.innerHTML = '<div class="alert alert-warning small mb-0">{% trans "Beskrivelse kreves." %}</div>';
+            return;
+        }
+        submitBtn.disabled = true;
+        resultBox.style.display = 'block';
+        resultBox.innerHTML = '<div class="alert alert-info small mb-0">{% trans "Sender..." %}</div>';
+
+        // Flatten each shot for submission
+        var shotPayload = shots.map(function(s) {
+            return {screenshot_b64: flattenActiveToDataUrl(s), url: s.url || ''};
+        });
+
+        var payload = {
+            kind: kindInput.value,
+            message: msg,
+            url: location.href,
+            user_agent: navigator.userAgent,
+            screen_size: window.innerWidth + 'x' + window.innerHeight,
+            shots: shotPayload,
+            // Backwards-compatibility: legacy single-screenshot field (first shot)
+            screenshot_b64: shotPayload.length ? shotPayload[0].screenshot_b64 : '',
+        };
+
+        fetch('{% url "feedback_widget:submit" %}', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': getCsrf(),
+            },
+            credentials: 'same-origin',
+            body: JSON.stringify(payload),
+        }).then(function(r) { return r.json().then(function(d) { return {ok: r.ok, data: d}; }); })
+          .then(function(res) {
+              if (res.ok && res.data.ok) {
+                  var hasWarning = !!(res.data.warning || (res.data.shot_errors && res.data.shot_errors.length));
+                  var cls = hasWarning ? 'alert-warning' : 'alert-success';
+                  var icon = hasWarning ? 'bi-exclamation-triangle-fill' : 'bi-check-circle';
+                  var html = '<div class="alert ' + cls + ' small mb-0"><i class="bi ' + icon + '"></i> {% trans "Takk! Tilbakemeldingen er sendt." %}';
+                  if (hasWarning) {
+                      html += '<br><strong>{% trans "Advarsel:" %}</strong> ' + (res.data.warning || '');
+                  }
+                  if (res.data.case_url) {
+                      html += '<br><a href="' + res.data.case_url + '" class="alert-link">{% trans "Se sak" %} #' + res.data.case_id + '</a>';
+                  }
+                  html += '</div>';
+                  resultBox.innerHTML = html;
+                  submitBtn.disabled = true;
+                  clearDraft();
+                  resetEditor();
+                  // Keep the modal open longer if there was a warning so the
+                  // user has time to read it
+                  setTimeout(function() { var m = getModal(); if (m) m.hide(); }, hasWarning ? 8000 : 3500);
+              } else {
+                  resultBox.innerHTML = '<div class="alert alert-danger small mb-0">{% trans "Feil" %}: ' + (res.data.error || '?') + '</div>';
+                  submitBtn.disabled = false;
+              }
+          })
+          .catch(function(err) {
+              resultBox.innerHTML = '<div class="alert alert-danger small mb-0">{% trans "Kunne ikke sende" %}: ' + err.message + '</div>';
+              submitBtn.disabled = false;
+          });
+    });
+})();
+</script>

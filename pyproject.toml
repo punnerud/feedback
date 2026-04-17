@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "django-feedback-widget"
+version = "0.1.0"
+description = "In-app feedback widget with screenshots, redaction, highlight spotlight, freehand drawing, multi-page capture and draft auto-save"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [
+    {name = "Morten Punnerud-Engelstad"},
+]
+keywords = ["django", "feedback", "screenshot", "bug-report", "user-feedback"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Web Environment",
+    "Framework :: Django",
+    "Framework :: Django :: 4.2",
+    "Framework :: Django :: 5.0",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "Django>=4.2",
+]
+
+[project.urls]
+Homepage = "https://github.com/punnerud/feedback"
+Repository = "https://github.com/punnerud/feedback.git"
+Issues = "https://github.com/punnerud/feedback/issues"
+
+[tool.setuptools.packages.find]
+include = ["feedback_widget*"]
+exclude = ["example*", "tests*"]
+
+[tool.setuptools.package-data]
+feedback_widget = [
+    "templates/feedback_widget/*.html",
+    "static/feedback_widget/*",
+    "migrations/*.py",
+]
