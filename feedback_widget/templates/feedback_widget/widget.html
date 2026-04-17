@@ -420,22 +420,35 @@
         });
     }
 
-    floatBtn.addEventListener('click', function(e) {
-        e.preventDefault();
-        var m = getModal();
-        if (!m) {
-            alert('{% trans "Modalen kunne ikke lastes — last inn siden på nytt." %}');
-            return;
-        }
+    if (floatBtn) {
+        floatBtn.addEventListener('click', function(e) {
+            e.preventDefault();
+            var m = getModal();
+            if (!m) {
+                alert('{% trans "Modalen kunne ikke lastes — last inn siden på nytt." %}');
+                return;
+            }
+            resetEditor();
+            resultBox.style.display = 'none';
+            resultBox.innerHTML = '';
+            msgInput.value = '';
+            submitBtn.disabled = false;
+            updateContext();
+            loadDraft();     // auto-load any saved draft
+            renderShotStrip();
+            m.show();
+        });
+    }
+    // Ved eksterne triggere: lytt på bootstrap-event som fyrer når modalen vises
+    modalEl.addEventListener('show.bs.modal', function() {
         resetEditor();
         resultBox.style.display = 'none';
         resultBox.innerHTML = '';
         msgInput.value = '';
         submitBtn.disabled = false;
         updateContext();
-        loadDraft();     // auto-load any saved draft
+        loadDraft();
         renderShotStrip();
-        m.show();
     });
 
     document.querySelectorAll('.fb-tool-btn').forEach(function(b) {
