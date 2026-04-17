@@ -438,8 +438,11 @@
             m.show();
         });
     }
-    // Ved eksterne triggere: lytt på bootstrap-event som fyrer når modalen vises
+    // Ved eksterne triggere: lytt på bootstrap-event som fyrer når modalen vises.
+    // Hopp over hvis captureAndStoreShot allerede håndterer oppsett (unngår dobbel-load).
+    var _skipNextShowHandler = false;
     modalEl.addEventListener('show.bs.modal', function() {
+        if (_skipNextShowHandler) { _skipNextShowHandler = false; return; }
         resetEditor();
         resultBox.style.display = 'none';
         resultBox.innerHTML = '';
@@ -1269,9 +1272,9 @@
             var m = getModal();
             if (m) {
                 resetEditor();
+                _skipNextShowHandler = true;  // vi setter opp selv, hopp over show-handler
                 m.show();
                 updateContext();
-                // Load draft with activeIdx='last' so the newly captured shot is active
                 loadDraft({activeIdx: 'last'});
             }
             _captureInProgress = false;
