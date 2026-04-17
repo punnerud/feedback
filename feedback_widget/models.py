@@ -34,7 +34,7 @@ class Feedback(models.Model):
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
-        null=True, blank=True, related_name='submitted_feedback',
+        null=True, blank=True, related_name='submitted_feedback_widget_items',
     )
     kind = models.CharField(max_length=20, choices=KIND_CHOICES, default='bug')
     message = models.TextField()

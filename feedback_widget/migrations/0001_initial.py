@@ -31,7 +31,7 @@ class Migration(migrations.Migration):
                 ('created_at', models.DateTimeField(auto_now_add=True)),
                 ('user', models.ForeignKey(blank=True, null=True,
                     on_delete=django.db.models.deletion.SET_NULL,
-                    related_name='submitted_feedback', to=settings.AUTH_USER_MODEL)),
+                    related_name='submitted_feedback_widget_items', to=settings.AUTH_USER_MODEL)),
             ],
             options={
                 'verbose_name': 'Feedback',
